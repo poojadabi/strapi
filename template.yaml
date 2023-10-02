@@ -1,0 +1,188 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  janars-nodes
+
+  All the NodeJs Lambda Functions
+  
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 30
+    Environment:
+      Variables:
+        REGION: 
+          Ref: AWS::Region
+        ENV: !If [CreateProdResources, prod , dev]
+
+Parameters:
+  ApplicationName:
+    Type: String
+    Description: Application Name
+    Default: Janars-Nodes
+  Environment:
+    Type: String
+    Description: Environment or stage Name
+    Default: dev
+  OwnerName:
+    Type: String
+    Description: Owner's name for tagging purposes
+    Default: Shrikant Lahane
+
+Conditions:
+  CreateProdResources: !Equals [!Ref Environment, prod]
+
+Resources:
+  JanarsHttpApiGateway:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins:
+         - "*"
+        AllowHeaders:
+         - "*"
+        AllowMethods:
+         - "*"
+        MaxAge: 300
+        AllowCredentials: false
+      Auth:
+        Authorizers:
+          JanarsAuth:
+            FunctionArn: !GetAtt JanarsAuthorizer.Arn
+            FunctionInvokeRole: !GetAtt AuthorizerRole.Arn
+            AuthorizerPayloadFormatVersion: 1.0
+        DefaultAuthorizer: JanarsAuth
+        EnableIamAuthorizer: true
+
+  AuthorizerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: Partner-Auth-Role
+      MaxSessionDuration: 43200
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - apigateway.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-idp:GetUser*
+                  - cognito-idp:AdminGetUser*
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - lambda:InvokeFunction
+                  - dynamodb:GetItem
+                Resource: '*'
+
+  PartnerServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: Janars-Partner-Role
+      MaxSessionDuration: 43200
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - apigateway.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-idp:*
+                  - dynamodb:*
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - lambda:InvokeFunction
+                  - route53:ChangeResourceRecordSets
+                  - ses:SendTemplatedEmail
+                  - secretsmanager:GetSecretValue
+                  - amplify:UpdateDomainAssociation
+                  - route53:ListHostedZones
+                Resource: '*'
+
+  JanarsAuthorizer:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: authorizer/
+      Handler: app.lambdaHandler
+      Runtime: nodejs14.x
+      MemorySize: 320
+      Role: !GetAtt AuthorizerRole.Arn
+
+  PartnersFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      CodeUri: partner-services/dist/
+      Handler: app.lambdaHandler
+      Runtime: nodejs14.x
+      MemorySize: 512
+      Role: !GetAtt PartnerServiceRole.Arn
+      Environment:
+        Variables:
+          STRIPE_API_KEY_CA: '{{resolve:ssm:stripe_api_key_CA:1}}'
+          STRIPE_API_KEY_IN: '{{resolve:ssm:stripe_api_key_IN:1}}'
+          PARTNER_TENANT_ID: '{{resolve:ssm:partner_tenant_id:1}}'
+          AMPLIFY_APP_ID: '{{resolve:ssm:amplify_app_id:1}}'
+          SENDER_EMAIL: janars-notifications@janars.com
+          END_POINT_SECRET_LIVE_CA: '{{resolve:ssm:end_point_secret_live_CA:1}}'
+          END_POINT_SECRET_TEST_CA: '{{resolve:ssm:end_point_secret_test_CA:1}}'
+      Events:
+        PartnerHttpApi:
+          Type: HttpApi
+          Properties:
+            Path: /partner-service/{proxy+}
+            Method: any
+            PayloadFormatVersion: '1.0'
+            ApiId: !Ref JanarsHttpApiGateway
+        PartnerWebhookApi:
+          Type: HttpApi
+          Properties:
+            Path: /webhook
+            Method: any
+            PayloadFormatVersion: '1.0'
+            ApiId: !Ref JanarsHttpApiGateway
+            Auth:
+              Authorizer: NONE    
+        MeteredUsageApi:
+          Type: HttpApi
+          Properties:
+            Path: /metered-usage
+            Method: any
+            PayloadFormatVersion: '1.0'
+            ApiId: !Ref JanarsHttpApiGateway
+            Auth:
+              Authorizer: AWS_IAM
+        PartnerOptionsApi: #Options api are for preflight request that we have to define in the java code
+          Type: HttpApi
+          Properties:
+            Path: /partner-service/{proxy+}
+            Method: options
+            PayloadFormatVersion: '1.0'
+            ApiId: !Ref JanarsHttpApiGateway
+            Auth:
+              Authorizer: NONE
+
+
+    
